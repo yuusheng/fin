@@ -9,7 +9,7 @@ use core::Fin;
 use lock::LockFile;
 
 #[derive(Debug, Parser)]
-#[clap(name = "fisher", version = env!("CARGO_PKG_VERSION"), about = "A plugin manager for Fish")]
+#[clap(name = "fin", version = env!("CARGO_PKG_VERSION"), about = "A plugin manager for Fish")]
 struct Cli {
     #[clap(subcommand)]
     command: Commands,
@@ -47,8 +47,8 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
-    let lock_file = LockFile::load("./fin.lock").unwrap();
-    lock_file.save("./fin-locl.toml").unwrap();
+    let lock_file = LockFile::load("./fin-lock.toml").unwrap();
+    lock_file.save("./fin-lock.toml").unwrap();
 
     let cli = Cli::parse();
     let mut fin = Fin::new(cli.fin_path)?;
