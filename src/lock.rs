@@ -23,9 +23,7 @@ pub trait PluginVecExt {
     fn diff(&self, other: &[Plugin]) -> Vec<Plugin>;
 }
 
-// 2. 为 Vec<Plugin> 实现这个 trait
 impl PluginVecExt for Vec<Plugin> {
-    // 实现 diff 方法（示例逻辑：找出 self 中存在但 other 中不存在的 Plugin）
     fn diff(&self, other: &[Plugin]) -> Vec<Plugin> {
         self.iter()
             .filter(|p| {
@@ -34,14 +32,14 @@ impl PluginVecExt for Vec<Plugin> {
                     .find(|plugin| plugin.name == p.name && plugin.commit_hash == p.commit_hash);
 
                 res.is_none()
-            }) // 需要 Plugin 实现 PartialEq
-            .cloned() // 从 &Plugin 转换为 Plugin（需要 Plugin 实现 Clone，或手动 map 克隆）
+            })
+            .cloned()
             .collect()
     }
 }
 
 impl LockFile {
-    pub fn load(path: &PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn load(path: &PathBuf) -> anyhow::Result<Self> {
         if let Ok(content) = fs::read_to_string(path) {
             let lock: LockFile = toml::from_str(&content)?;
             return Ok(lock);
@@ -56,7 +54,7 @@ impl LockFile {
         })
     }
 
-    pub fn save(&self, path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn save(&self, path: &PathBuf) -> anyhow::Result<()> {
         let toml_str = toml::to_string_pretty(&self)?;
         fs::write(path, toml_str)?;
         Ok(())

@@ -2,9 +2,8 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::{
     collections::{HashMap, HashSet},
-    default, env,
-    fs::{self, File},
-    io::{self, BufRead, BufWriter, Write},
+    env,
+    fs::{self},
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -15,35 +14,34 @@ use crate::lock::{LockFile, Plugin, PluginVecExt};
 pub struct Fin {
     fisher_path: PathBuf,
     fish_config_dir: PathBuf,
-    fish_plugins_path: PathBuf,
+    fin_lock_file_path: PathBuf,
     installed_plugins: HashSet<String>,
     plugin_files: HashMap<String, Vec<PathBuf>>, // Plugin file mappings
     lock_file: LockFile,
 }
 
-const FISH_PLUGINS_FILENAME: &str = "fish_plugins";
+const FIN_LOCK_FILENAME: &str = "fin-lock.toml";
 impl Fin {
     /// Initialize a Fisher instance
     pub fn new(fisher_path: Option<PathBuf>) -> Result<Self> {
         // Get Fish configuration directory
         let fish_config_dir = Self::get_fish_config_dir()?;
         let fisher_path = fisher_path.unwrap_or_else(|| fish_config_dir.clone());
-        let fish_plugins_path = fish_config_dir.join(FISH_PLUGINS_FILENAME);
+        let fin_lock_file_path = fish_config_dir.join(FIN_LOCK_FILENAME);
 
         // Ensure installation directories exist
         for subdir in ["functions", "conf.d", "completions"] {
             fs::create_dir_all(fisher_path.join(subdir))?;
         }
 
+        let lock_file = LockFile::load(&fin_lock_file_path).context("fin-lock.toml has broken")?;
         // Load installed plugins
-        let installed_plugins = Self::load_installed_plugins(&fish_plugins_path)?;
-
-        let lock_file = LockFile::load(&fish_plugins_path).unwrap();
+        let installed_plugins = Self::load_installed_plugins(&lock_file.plugins)?;
 
         Ok(Self {
             fisher_path,
             fish_config_dir,
-            fish_plugins_path,
+            fin_lock_file_path,
             installed_plugins,
             plugin_files: HashMap::new(),
             lock_file,
@@ -63,29 +61,12 @@ impl Fin {
     }
 
     /// Load installed plugins from file
-    fn load_installed_plugins(plugins_path: &Path) -> Result<HashSet<String>> {
+    fn load_installed_plugins(lock_file_plugins: &[Plugin]) -> Result<HashSet<String>> {
         let mut plugins = HashSet::new();
-        if plugins_path.exists() {
-            let file = File::open(plugins_path)?;
-            for line in io::BufReader::new(file).lines() {
-                let line = line?;
-                let plugin = line.trim();
-                if !plugin.is_empty() {
-                    plugins.insert(plugin.to_string());
-                }
-            }
+        for plugin in lock_file_plugins {
+            plugins.insert(plugin.name.to_string());
         }
         Ok(plugins)
-    }
-
-    /// Save plugin list to file
-    fn save_plugins(&self) -> Result<()> {
-        let file = File::create(&self.fish_plugins_path)?;
-        let mut writer = BufWriter::new(file);
-        for plugin in &self.installed_plugins {
-            writeln!(writer, "{}", plugin)?;
-        }
-        Ok(())
     }
 
     /// Install plugins
@@ -105,18 +86,21 @@ impl Fin {
             .map(|plugin| self.fetch_plugin(plugin))
             .collect();
 
-        for result in results {
+        for (i, result) in results.iter().enumerate() {
             match result {
                 Ok((plugin, temp_dir)) => {
                     self.install_plugin_files(plugin, temp_dir.path())?;
                     self.installed_plugins.insert(plugin.to_string());
+                    let installed_plugin = plugins.get(i).expect("Plugin missing index");
+                    self.lock_file.plugins.push(installed_plugin.clone());
                     println!("Installed: {}", plugin);
                 }
                 Err(e) => eprintln!("Failed to install a plugin: {}", e),
             }
         }
 
-        self.save_plugins()?;
+        // self.save_plugins()?;
+        self.lock_file.save(&self.fin_lock_file_path)?;
         Ok(())
     }
 
@@ -227,7 +211,7 @@ impl Fin {
             }
         }
 
-        self.save_plugins()?;
+        // self.save_plugins()?;
         println!("Removed {} plugins total", removed_count);
         Ok(())
     }
