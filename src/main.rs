@@ -47,9 +47,6 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
-    let lock_file = LockFile::load("./fin-lock.toml").unwrap();
-    lock_file.save("./fin-lock.toml").unwrap();
-
     let cli = Cli::parse();
     let mut fin = Fin::new(cli.fin_path)?;
 

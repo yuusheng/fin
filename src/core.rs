@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::{
     collections::{HashMap, HashSet},
-    env,
+    default, env,
     fs::{self, File},
     io::{self, BufRead, BufWriter, Write},
     path::{Path, PathBuf},
@@ -10,12 +10,15 @@ use std::{
 };
 use tempfile::TempDir;
 
+use crate::lock::{LockFile, Plugin, PluginVecExt};
+
 pub struct Fin {
     fisher_path: PathBuf,
     fish_config_dir: PathBuf,
     fish_plugins_path: PathBuf,
     installed_plugins: HashSet<String>,
     plugin_files: HashMap<String, Vec<PathBuf>>, // Plugin file mappings
+    lock_file: LockFile,
 }
 
 const FISH_PLUGINS_FILENAME: &str = "fish_plugins";
@@ -35,12 +38,15 @@ impl Fin {
         // Load installed plugins
         let installed_plugins = Self::load_installed_plugins(&fish_plugins_path)?;
 
+        let lock_file = LockFile::load(&fish_plugins_path).unwrap();
+
         Ok(Self {
             fisher_path,
             fish_config_dir,
             fish_plugins_path,
             installed_plugins,
             plugin_files: HashMap::new(),
+            lock_file,
         })
     }
 
@@ -84,11 +90,8 @@ impl Fin {
 
     /// Install plugins
     pub fn install(&mut self, plugins: &[String]) -> Result<()> {
-        let plugins_to_install: Vec<String> = plugins
-            .iter()
-            .filter(|p| !self.installed_plugins.contains(p.as_str()))
-            .cloned()
-            .collect();
+        let plugins = parse_plugin(plugins)?;
+        let plugins_to_install = plugins.diff(&self.lock_file.plugins);
 
         if plugins_to_install.is_empty() {
             println!("All plugins are already installed");
@@ -97,7 +100,7 @@ impl Fin {
 
         println!("Installing {} plugins...", plugins_to_install.len());
 
-        let results: Vec<Result<(String, TempDir)>> = plugins_to_install
+        let results: Vec<Result<(&str, TempDir)>> = plugins_to_install
             .par_iter()
             .map(|plugin| self.fetch_plugin(plugin))
             .collect();
@@ -105,8 +108,8 @@ impl Fin {
         for result in results {
             match result {
                 Ok((plugin, temp_dir)) => {
-                    self.install_plugin_files(&plugin, temp_dir.path())?;
-                    self.installed_plugins.insert(plugin.clone());
+                    self.install_plugin_files(plugin, temp_dir.path())?;
+                    self.installed_plugins.insert(plugin.to_string());
                     println!("Installed: {}", plugin);
                 }
                 Err(e) => eprintln!("Failed to install a plugin: {}", e),
@@ -118,35 +121,17 @@ impl Fin {
     }
 
     /// Fetch a single plugin
-    fn fetch_plugin(&self, plugin: &str) -> Result<(String, TempDir)> {
+    fn fetch_plugin<'a>(&self, plugin: &'a Plugin) -> Result<(&'a str, TempDir)> {
         let temp_dir = TempDir::new()?;
         let temp_path = temp_dir.path();
 
-        if Path::new(plugin).exists() {
-            Self::copy_dir(Path::new(plugin), temp_path)?;
+        if Path::new(&plugin.name).exists() {
+            Self::copy_dir(Path::new(&plugin.name), temp_path)?;
         } else {
-            let url = Self::parse_repo_url(plugin)?;
-            Self::download_repo(&url, temp_path)?;
+            Self::download_repo(&plugin.source, temp_path)?;
         }
 
-        Ok((plugin.to_string(), temp_dir))
-    }
-
-    /// Parse repository URL (supports GitHub)
-    fn parse_repo_url(plugin: &str) -> Result<String> {
-        let parts: Vec<&str> = plugin.split('@').collect();
-        let repo = parts[0];
-        let ref_name = if parts.len() > 1 { parts[1] } else { "HEAD" };
-
-        // GitHub repository
-        if repo.contains('/') {
-            Ok(format!(
-                "https://github.com/{}/archive/{}.tar.gz",
-                repo, ref_name
-            ))
-        } else {
-            Err(anyhow::anyhow!("Invalid repository format: {}", plugin))
-        }
+        Ok((&plugin.name, temp_dir))
     }
 
     /// Download and extract repository
@@ -291,4 +276,27 @@ impl Fin {
         }
         Ok(())
     }
+}
+
+fn parse_plugin(plugins: &[String]) -> anyhow::Result<Vec<Plugin>> {
+    let mut parsed_plugins: Vec<Plugin> = Vec::with_capacity(plugins.len());
+    for plugin in plugins {
+        let parts: Vec<&str> = plugin.split('@').collect();
+        let repo = parts[0];
+        let ref_name = if parts.len() > 1 { parts[1] } else { "HEAD" };
+        let repo_name = repo
+            .split('/')
+            .last()
+            .context(format!("Repo Name invalid: {}", repo))?;
+
+        let source = format!("https://github.com/{}/archive/{}.tar.gz", repo, ref_name);
+        let plugin = Plugin {
+            name: String::from(repo_name),
+            source,
+            ..Default::default()
+        };
+        parsed_plugins.push(plugin);
+    }
+
+    Ok(parsed_plugins)
 }
