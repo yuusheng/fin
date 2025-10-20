@@ -1,29 +1,27 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use regex::Regex;
+use rayon::prelude::*;
 use std::{
     collections::{HashMap, HashSet},
     env,
     fs::{self, File},
     io::{self, BufRead, BufWriter, Write},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 use tempfile::TempDir;
-use tokio::runtime::Runtime;
 
-const FISHER_VERSION: &str = "4.4.5";
 const FISH_PLUGINS_FILENAME: &str = "fish_plugins";
 
 #[derive(Debug, Parser)]
-#[clap(name = "fisher", version = FISHER_VERSION, about = "A plugin manager for Fish")]
+#[clap(name = "fisher", version = env!("CARGO_PKG_VERSION"), about = "A plugin manager for Fish")]
 struct Cli {
     #[clap(subcommand)]
     command: Commands,
 
     /// Plugin installation path (default: Fish config directory)
     #[clap(long)]
-    fisher_path: Option<PathBuf>,
+    fin_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -53,7 +51,7 @@ enum Commands {
     },
 }
 
-struct Fisher {
+struct Fin {
     fisher_path: PathBuf,
     fish_config_dir: PathBuf,
     fish_plugins_path: PathBuf,
@@ -61,7 +59,7 @@ struct Fisher {
     plugin_files: HashMap<String, Vec<PathBuf>>, // Plugin file mappings
 }
 
-impl Fisher {
+impl Fin {
     /// Initialize a Fisher instance
     fn new(fisher_path: Option<PathBuf>) -> Result<Self> {
         // Get Fish configuration directory
@@ -70,8 +68,7 @@ impl Fisher {
         let fish_plugins_path = fish_config_dir.join(FISH_PLUGINS_FILENAME);
 
         // Ensure installation directories exist
-        fs::create_dir_all(&fisher_path)?;
-        for subdir in ["functions", "conf.d", "completions", "themes"] {
+        for subdir in ["functions", "conf.d", "completions"] {
             fs::create_dir_all(fisher_path.join(subdir))?;
         }
 
@@ -93,9 +90,9 @@ impl Fisher {
         if let Ok(path) = env::var("__fish_config_dir") {
             Ok(PathBuf::from(path))
         } else {
-            Ok(dirs::home_dir()
-                .context("Failed to get user home directory")?
-                .join(".config/fish"))
+            dirs::home_dir()
+                .map(|p| p.join(".config/fish"))
+                .context("Failed to get user home directory")
         }
     }
 
@@ -139,46 +136,40 @@ impl Fisher {
         }
 
         println!("Installing {} plugins...", plugins_to_install.len());
-        // Download plugins in parallel
-        let rt = Runtime::new()?;
-        let fetched_plugins = rt.block_on(self.fetch_plugins(&plugins_to_install))?;
 
-        // Install downloaded plugins
-        for (plugin, temp_dir) in fetched_plugins {
-            self.install_plugin_files(&plugin, &temp_dir)?;
-            self.installed_plugins.insert(plugin.clone());
-            println!("Installed: {}", plugin);
+        let results: Vec<Result<(String, TempDir)>> = plugins_to_install
+            .par_iter()
+            .map(|plugin| self.fetch_plugin(plugin))
+            .collect();
+
+        for result in results {
+            match result {
+                Ok((plugin, temp_dir)) => {
+                    self.install_plugin_files(&plugin, temp_dir.path())?;
+                    self.installed_plugins.insert(plugin.clone());
+                    println!("Installed: {}", plugin);
+                }
+                Err(e) => eprintln!("Failed to install a plugin: {}", e),
+            }
         }
 
         self.save_plugins()?;
         Ok(())
     }
 
-    /// Fetch plugins (supports local paths and remote repositories)
-    async fn fetch_plugins(&self, plugins: &[String]) -> Result<Vec<(String, TempDir)>> {
-        let mut results = Vec::new();
-        for plugin in plugins {
-            let temp_dir = TempDir::new()?;
-            let temp_path = temp_dir.path().to_path_buf();
+    /// Fetch a single plugin
+    fn fetch_plugin(&self, plugin: &str) -> Result<(String, TempDir)> {
+        let temp_dir = TempDir::new()?;
+        let temp_path = temp_dir.path();
 
-            if Path::new(plugin).exists() {
-                // Local plugin - copy directly
-                Self::copy_local_plugin(plugin, &temp_path)?;
-                results.push((plugin.clone(), temp_dir));
-            } else {
-                // Remote plugin - download from Git repository
-                if let Ok(url) = Self::parse_repo_url(plugin) {
-                    if Self::download_repo(&url, &temp_path).await? {
-                        results.push((plugin.clone(), temp_dir));
-                    } else {
-                        eprintln!("Failed to download plugin: {}", plugin);
-                    }
-                } else {
-                    eprintln!("Invalid plugin format: {}", plugin);
-                }
-            }
+        if Path::new(plugin).exists() {
+            Self::copy_dir(Path::new(plugin), temp_path)?;
+        } else {
+            let url = Self::parse_repo_url(plugin)?;
+            Self::download_repo(&url, temp_path)?;
         }
-        Ok(results)
+
+        Ok((plugin.to_string(), temp_dir))
     }
 
     /// Parse repository URL (supports GitHub)
@@ -199,42 +190,28 @@ impl Fisher {
     }
 
     /// Download and extract repository
-    async fn download_repo(url: &str, dest: &Path) -> Result<bool> {
+    fn download_repo(url: &str, dest: &Path) -> Result<()> {
         println!("Downloading: {}", url);
-        // Use curl to download and extract
-        let status = Command::new("curl")
+        let curl = Command::new("curl")
             .arg("-sL")
             .arg(url)
-            .arg("-o")
-            .arg("-")
-            .pipe(
-                Command::new("tar")
-                    .arg("-xz")
-                    .arg("-C")
-                    .arg(dest)
-                    .arg("--strip-components=1"),
-            )
+            .stdout(Stdio::piped())
+            .spawn()
+            .context("Failed to spawn curl")?;
+
+        let tar_status = Command::new("tar")
+            .arg("-xz")
+            .arg("-C")
+            .arg(dest.as_os_str())
+            .arg("--strip-components=1")
+            .stdin(curl.stdout.context("Failed to get curl stdout")?)
             .status()
-            .context("Failed to download repository")?;
+            .context("Failed to run tar")?;
 
-        Ok(status.success())
-    }
-
-    /// Copy local plugin
-    fn copy_local_plugin(source: &str, dest: &Path) -> Result<()> {
-        let source_path = Path::new(source);
-        for entry in fs::read_dir(source_path)? {
-            let entry = entry?;
-            let path = entry.path();
-            let dest_path = dest.join(path.file_name().context("Invalid file name")?);
-
-            if path.is_dir() {
-                fs::create_dir_all(&dest_path)?;
-                Self::copy_dir(&path, &dest_path)?;
-            } else {
-                fs::copy(&path, &dest_path)?;
-            }
+        if !tar_status.success() {
+            return Err(anyhow::anyhow!("tar command failed"));
         }
+
         Ok(())
     }
 
@@ -259,7 +236,8 @@ impl Fisher {
     fn install_plugin_files(&mut self, plugin: &str, temp_dir: &Path) -> Result<()> {
         let mut installed_files = Vec::new();
         // Process component directories in the plugin
-        for component in ["functions", "conf.d", "completions", "themes"] {
+        // Process component directories in the plugin
+        for component in ["functions", "conf.d", "completions"] {
             let src_dir = temp_dir.join(component);
             if src_dir.exists() {
                 let dest_dir = self.fisher_path.join(component);
@@ -338,15 +316,12 @@ impl Fisher {
 
     /// List installed plugins
     fn list(&self, pattern: Option<&str>) -> Result<()> {
-        let plugins: Vec<&String> = self.installed_plugins.iter().collect();
+        let mut plugins: Vec<&String> = self.installed_plugins.iter().collect();
+        plugins.sort();
+
         if let Some(pattern) = pattern {
-            let re = Regex::new(pattern)?;
-            let filtered: Vec<&String> = plugins
-                .iter()
-                .filter(|p| re.is_match(p.as_str()))
-                .cloned()
-                .collect();
-            for plugin in filtered {
+            let re = regex::Regex::new(pattern)?;
+            for plugin in plugins.into_iter().filter(|p| re.is_match(p)) {
                 println!("{}", plugin);
             }
         } else {
@@ -360,12 +335,12 @@ impl Fisher {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let mut fisher = Fisher::new(cli.fisher_path)?;
+    let mut fin = Fin::new(cli.fin_path)?;
 
     match cli.command {
-        Commands::Install { plugins } => fisher.install(&plugins),
-        Commands::Remove { plugins } => fisher.remove(&plugins),
-        Commands::Update { plugins } => fisher.update(&plugins),
-        Commands::List { pattern } => fisher.list(pattern.as_deref()),
+        Commands::Install { plugins } => fin.install(&plugins),
+        Commands::Remove { plugins } => fin.remove(&plugins),
+        Commands::Update { plugins } => fin.update(&plugins),
+        Commands::List { pattern } => fin.list(pattern.as_deref()),
     }
 }
