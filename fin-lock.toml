@@ -1,0 +1,10 @@
+version = "1.0"
+generated_at = "2025-10-20T12:34:56Z"
+
+[[plugins]]
+name = "z"
+source = "https://github.com/agkozak/z.fish"
+commit_hash = "a1b2c3d4e5f67890abcdef1234567890abcdef"
+branch = "main"
+installed_files = ["functions/z.fish", "completions/z.fish"]
+checksum = "sha256:abc123..."
