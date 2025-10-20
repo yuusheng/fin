@@ -6,7 +6,6 @@ use clap::{Parser, Subcommand};
 use std::{env, path::PathBuf};
 
 use core::Fin;
-use lock::LockFile;
 
 #[derive(Debug, Parser)]
 #[clap(name = "fin", version = env!("CARGO_PKG_VERSION"), about = "A plugin manager for Fish")]
