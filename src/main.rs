@@ -23,7 +23,7 @@ enum Commands {
     /// Install plugins
     Install {
         /// Plugins to install (repository URLs or local paths)
-        plugins: Vec<String>,
+        plugins: Option<Vec<String>>,
     },
 
     /// Remove installed plugins
@@ -39,10 +39,7 @@ enum Commands {
     },
 
     /// List installed plugins
-    List {
-        /// Filter plugins by regex pattern
-        pattern: Option<String>,
-    },
+    List {},
 }
 
 fn main() -> Result<()> {
@@ -50,9 +47,9 @@ fn main() -> Result<()> {
     let mut fin = Fin::new(cli.fin_path)?;
 
     match cli.command {
-        Commands::Install { plugins } => fin.install(&plugins),
+        Commands::Install { plugins } => fin.install(plugins),
         Commands::Remove { plugins } => fin.remove(&plugins),
         Commands::Update { plugins } => fin.update(&plugins),
-        Commands::List { pattern } => fin.list(pattern.as_deref()),
+        Commands::List {} => fin.list(),
     }
 }

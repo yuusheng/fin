@@ -11,11 +11,11 @@ use tempfile::TempDir;
 
 use crate::lock::{LockFile, Plugin, PluginVecExt};
 
+#[allow(dead_code)]
 pub struct Fin {
     fisher_path: PathBuf,
     fish_config_dir: PathBuf,
     fin_lock_file_path: PathBuf,
-    installed_plugins: HashSet<String>,
     plugin_files: HashMap<String, Vec<PathBuf>>, // Plugin file mappings
     lock_file: LockFile,
 }
@@ -35,14 +35,11 @@ impl Fin {
         }
 
         let lock_file = LockFile::load(&fin_lock_file_path).context("fin-lock.toml has broken")?;
-        // Load installed plugins
-        let installed_plugins = Self::load_installed_plugins(&lock_file.plugins)?;
 
         Ok(Self {
             fisher_path,
             fish_config_dir,
             fin_lock_file_path,
-            installed_plugins,
             plugin_files: HashMap::new(),
             lock_file,
         })
@@ -60,19 +57,14 @@ impl Fin {
         }
     }
 
-    /// Load installed plugins from file
-    fn load_installed_plugins(lock_file_plugins: &[Plugin]) -> Result<HashSet<String>> {
-        let mut plugins = HashSet::new();
-        for plugin in lock_file_plugins {
-            plugins.insert(plugin.name.to_string());
-        }
-        Ok(plugins)
-    }
-
     /// Install plugins
-    pub fn install(&mut self, plugins: &[String]) -> Result<()> {
-        let plugins = parse_plugin(plugins)?;
-        let plugins_to_install = plugins.diff(&self.lock_file.plugins);
+    pub fn install(&mut self, plugins: Option<Vec<String>>) -> Result<()> {
+        let mut plugins_to_install = self.lock_file.plugins.clone();
+
+        if let Some(plugins) = plugins {
+            let plugins = parse_plugin(&plugins)?;
+            plugins_to_install = plugins.diff(&self.lock_file.plugins);
+        }
 
         if plugins_to_install.is_empty() {
             println!("All plugins are already installed");
@@ -90,8 +82,7 @@ impl Fin {
             match result {
                 Ok((plugin, temp_dir)) => {
                     self.install_plugin_files(plugin, temp_dir.path())?;
-                    self.installed_plugins.insert(plugin.to_string());
-                    let installed_plugin = plugins.get(i).expect("Plugin missing index");
+                    let installed_plugin = plugins_to_install.get(i).expect("Plugin missing index");
                     self.lock_file.plugins.push(installed_plugin.clone());
                     println!("Installed: {}", plugin);
                 }
@@ -99,7 +90,6 @@ impl Fin {
             }
         }
 
-        // self.save_plugins()?;
         self.lock_file.save(&self.fin_lock_file_path)?;
         Ok(())
     }
@@ -187,22 +177,32 @@ impl Fin {
         Ok(())
     }
 
+    fn plugins(&self) -> Vec<&str> {
+        self.lock_file
+            .plugins
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect()
+    }
+
     /// Remove plugins
     pub fn remove(&mut self, plugins: &[String]) -> Result<()> {
         let mut removed_count = 0;
 
         for plugin in plugins {
-            if self.installed_plugins.contains(plugin) {
+            if let Some(installed_plugin) =
+                self.lock_file.plugins.iter().find(|&p| p.name == *plugin)
+            {
                 // Remove plugin files
-                if let Some(files) = self.plugin_files.get(plugin) {
+                if let Some(files) = &installed_plugin.installed_files {
                     for file in files {
-                        if file.exists() {
-                            fs::remove_file(file)?;
+                        let path = PathBuf::from(file);
+                        if path.exists() {
+                            fs::remove_file(path)?;
                         }
                     }
                 }
 
-                self.installed_plugins.remove(plugin);
                 self.plugin_files.remove(plugin);
                 removed_count += 1;
                 println!("Removed: {}", plugin);
@@ -220,12 +220,17 @@ impl Fin {
     pub fn update(&mut self, plugins: &[String]) -> Result<()> {
         let plugins_to_update = if plugins.is_empty() {
             // Update all installed plugins
-            self.installed_plugins.iter().cloned().collect::<Vec<_>>()
+            self.lock_file
+                .plugins
+                .iter()
+                .map(|p| p.name.to_string())
+                .collect::<Vec<String>>()
         } else {
+            let installed_plugins = self.plugins();
             // Update only specified plugins
             plugins
                 .iter()
-                .filter(|p| self.installed_plugins.contains(p.as_str()))
+                .filter(|&p| installed_plugins.contains(&p.as_str()))
                 .cloned()
                 .collect()
         };
@@ -239,25 +244,16 @@ impl Fin {
 
         // Update by removing then reinstalling
         self.remove(&plugins_to_update)?;
-        self.install(&plugins_to_update)?;
+        self.install(Some(plugins_to_update))?;
         Ok(())
     }
 
     /// List installed plugins
-    pub fn list(&self, pattern: Option<&str>) -> Result<()> {
-        let mut plugins: Vec<&String> = self.installed_plugins.iter().collect();
-        plugins.sort();
-
-        if let Some(pattern) = pattern {
-            let re = regex::Regex::new(pattern)?;
-            for plugin in plugins.into_iter().filter(|p| re.is_match(p)) {
-                println!("{}", plugin);
-            }
-        } else {
-            for plugin in plugins {
-                println!("{}", plugin);
-            }
+    pub fn list(&self) -> Result<()> {
+        for plugin in self.plugins() {
+            println!("{}", plugin);
         }
+
         Ok(())
     }
 }
