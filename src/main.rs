@@ -24,6 +24,10 @@ enum Commands {
     Install {
         /// Plugins to install (repository URLs or local paths)
         plugins: Option<Vec<String>>,
+
+        /// Install plugins from the Fish plugin registry
+        #[clap(long, short, default_value_t = false)]
+        force: bool,
     },
 
     /// Remove installed plugins
@@ -47,7 +51,7 @@ fn main() -> Result<()> {
     let mut fin = Fin::new(cli.fin_path)?;
 
     match cli.command {
-        Commands::Install { plugins } => fin.install(plugins),
+        Commands::Install { plugins, force } => fin.install(plugins, force),
         Commands::Remove { plugins } => fin.remove(&plugins),
         Commands::Update { plugins } => fin.update(&plugins),
         Commands::List {} => fin.list(),

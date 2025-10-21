@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf};
+use std::{collections::HashSet, fs, path::PathBuf};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LockFile {
@@ -9,7 +9,7 @@ pub struct LockFile {
     pub plugins: Vec<Plugin>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, Eq)]
 pub struct Plugin {
     pub name: String,
     pub source: String,
@@ -19,22 +19,36 @@ pub struct Plugin {
     pub checksum: Option<String>,
 }
 
+impl PartialEq for Plugin {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.commit_hash == other.commit_hash
+    }
+}
+
+impl std::hash::Hash for Plugin {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.commit_hash.hash(state);
+    }
+}
+
 pub trait PluginVecExt {
     fn diff(&self, other: &[Plugin]) -> Vec<Plugin>;
+    fn diff_mut(&mut self, other: &[Plugin]);
 }
 
 impl PluginVecExt for Vec<Plugin> {
     fn diff(&self, other: &[Plugin]) -> Vec<Plugin> {
+        let other_plugins: HashSet<_> = other.iter().collect();
         self.iter()
-            .filter(|p| {
-                let res = other
-                    .iter()
-                    .find(|plugin| plugin.name == p.name && plugin.commit_hash == p.commit_hash);
-
-                res.is_none()
-            })
+            .filter(|p| !other_plugins.contains(p))
             .cloned()
             .collect()
+    }
+
+    fn diff_mut(&mut self, other: &[Plugin]) {
+        let other_plugins: HashSet<_> = other.iter().collect();
+        self.retain(|p| !other_plugins.contains(p));
     }
 }
 

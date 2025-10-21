@@ -11,6 +11,8 @@ use tempfile::TempDir;
 
 use crate::lock::{LockFile, Plugin, PluginVecExt};
 
+const PLUGIN_SUBDIRS: &[&str] = &["functions", "conf.d", "completions"];
+
 #[allow(dead_code)]
 pub struct Fin {
     fisher_path: PathBuf,
@@ -30,7 +32,7 @@ impl Fin {
         let fin_lock_file_path = fish_config_dir.join(FIN_LOCK_FILENAME);
 
         // Ensure installation directories exist
-        for subdir in ["functions", "conf.d", "completions"] {
+        for subdir in PLUGIN_SUBDIRS {
             fs::create_dir_all(fisher_path.join(subdir))?;
         }
 
@@ -58,13 +60,8 @@ impl Fin {
     }
 
     /// Install plugins
-    pub fn install(&mut self, plugins: Option<Vec<String>>) -> Result<()> {
-        let mut plugins_to_install = self.lock_file.plugins.clone();
-
-        if let Some(plugins) = plugins {
-            let plugins = parse_plugin(&plugins)?;
-            plugins_to_install = plugins.diff(&self.lock_file.plugins);
-        }
+    pub fn install(&mut self, plugins: Option<Vec<String>>, force: bool) -> Result<()> {
+        let plugins_to_install = self.get_plugins_to_install(plugins, force)?;
 
         if plugins_to_install.is_empty() {
             println!("All plugins are already installed");
@@ -73,25 +70,50 @@ impl Fin {
 
         println!("Installing {} plugins...", plugins_to_install.len());
 
-        let results: Vec<Result<(&str, TempDir)>> = plugins_to_install
+        let (new_plugins, installed_files): (Vec<_>, Vec<_>) = plugins_to_install
             .par_iter()
-            .map(|plugin| self.fetch_plugin(plugin))
-            .collect();
+            .filter_map(|plugin| self.install_plugin(plugin).ok())
+            .unzip();
 
-        for (i, result) in results.iter().enumerate() {
-            match result {
-                Ok((plugin, temp_dir)) => {
-                    self.install_plugin_files(plugin, temp_dir.path())?;
-                    let installed_plugin = plugins_to_install.get(i).expect("Plugin missing index");
-                    self.lock_file.plugins.push(installed_plugin.clone());
-                    println!("Installed: {}", plugin);
-                }
-                Err(e) => eprintln!("Failed to install a plugin: {}", e),
-            }
+        self.plugin_files.extend(
+            new_plugins
+                .iter()
+                .map(|p| p.name.clone())
+                .zip(installed_files),
+        );
+
+        for plugin in &new_plugins {
+            println!("Installed: {}", &plugin.name);
         }
 
+        self.lock_file.plugins.extend(new_plugins);
         self.lock_file.save(&self.fin_lock_file_path)?;
         Ok(())
+    }
+
+    fn get_plugins_to_install(
+        &self,
+        plugins: Option<Vec<String>>,
+        force: bool,
+    ) -> Result<Vec<Plugin>> {
+        let mut plugins_to_install = if let Some(plugins) = plugins {
+            parse_plugin(&plugins)?
+        } else {
+            self.lock_file.plugins.clone()
+        };
+
+        if !force {
+            plugins_to_install.diff_mut(&self.lock_file.plugins);
+        }
+
+        Ok(plugins_to_install)
+    }
+
+    fn install_plugin(&self, plugin: &Plugin) -> Result<(Plugin, Vec<PathBuf>)> {
+        self.fetch_plugin(plugin).and_then(|(_, temp_dir)| {
+            Self::do_install_plugin_files(&self.fisher_path, temp_dir.path())
+                .map(|installed_files| (plugin.clone(), installed_files))
+        })
     }
 
     /// Fetch a single plugin
@@ -151,15 +173,12 @@ impl Fin {
         Ok(())
     }
 
-    /// Install plugin files to target directory
-    fn install_plugin_files(&mut self, plugin: &str, temp_dir: &Path) -> Result<()> {
+    fn do_install_plugin_files(fisher_path: &Path, temp_dir: &Path) -> Result<Vec<PathBuf>> {
         let mut installed_files = Vec::new();
-        // Process component directories in the plugin
-        // Process component directories in the plugin
-        for component in ["functions", "conf.d", "completions"] {
+        for component in PLUGIN_SUBDIRS {
             let src_dir = temp_dir.join(component);
             if src_dir.exists() {
-                let dest_dir = self.fisher_path.join(component);
+                let dest_dir = fisher_path.join(component);
                 for entry in fs::read_dir(src_dir)? {
                     let entry = entry?;
                     let src_path = entry.path();
@@ -171,48 +190,41 @@ impl Fin {
                 }
             }
         }
-
-        self.plugin_files
-            .insert(plugin.to_string(), installed_files);
-        Ok(())
+        Ok(installed_files)
     }
 
-    fn plugins(&self) -> Vec<&str> {
+    fn plugins(&self) -> impl Iterator<Item = &str> {
         self.lock_file
             .plugins
             .iter()
             .map(|p| p.name.as_str())
-            .collect()
     }
 
     /// Remove plugins
     pub fn remove(&mut self, plugins: &[String]) -> Result<()> {
+        let plugins_to_remove: HashSet<_> = plugins.iter().collect();
         let mut removed_count = 0;
 
-        for plugin in plugins {
-            if let Some(installed_plugin) =
-                self.lock_file.plugins.iter().find(|&p| p.name == *plugin)
-            {
-                // Remove plugin files
-                if let Some(files) = &installed_plugin.installed_files {
+        self.lock_file.plugins.retain(|plugin| {
+            if plugins_to_remove.contains(&plugin.name) {
+                if let Some(files) = &plugin.installed_files {
                     for file in files {
-                        let path = PathBuf::from(file);
-                        if path.exists() {
-                            fs::remove_file(path)?;
+                        if fs::remove_file(file).is_err() {
+                            // Ignore errors for files that don't exist
                         }
                     }
                 }
-
-                self.plugin_files.remove(plugin);
+                self.plugin_files.remove(&plugin.name);
                 removed_count += 1;
-                println!("Removed: {}", plugin);
+                println!("Removed: {}", &plugin.name);
+                false
             } else {
-                eprintln!("Plugin not installed: {}", plugin);
+                true
             }
-        }
+        });
 
-        // self.save_plugins()?;
         println!("Removed {} plugins total", removed_count);
+        self.lock_file.save(&self.fin_lock_file_path)?;
         Ok(())
     }
 
@@ -226,11 +238,11 @@ impl Fin {
                 .map(|p| p.name.to_string())
                 .collect::<Vec<String>>()
         } else {
-            let installed_plugins = self.plugins();
+            let installed_plugins: HashSet<_> = self.plugins().collect();
             // Update only specified plugins
             plugins
                 .iter()
-                .filter(|&p| installed_plugins.contains(&p.as_str()))
+                .filter(|p| installed_plugins.contains(p.as_str()))
                 .cloned()
                 .collect()
         };
@@ -243,9 +255,7 @@ impl Fin {
         println!("Updating {} plugins...", plugins_to_update.len());
 
         // Update by removing then reinstalling
-        self.remove(&plugins_to_update)?;
-        self.install(Some(plugins_to_update))?;
-        Ok(())
+        self.install(Some(plugins_to_update), true)
     }
 
     /// List installed plugins
@@ -259,24 +269,24 @@ impl Fin {
 }
 
 fn parse_plugin(plugins: &[String]) -> anyhow::Result<Vec<Plugin>> {
-    let mut parsed_plugins: Vec<Plugin> = Vec::with_capacity(plugins.len());
-    for plugin in plugins {
-        let parts: Vec<&str> = plugin.split('@').collect();
-        let repo = parts[0];
-        let ref_name = if parts.len() > 1 { parts[1] } else { "HEAD" };
-        let repo_name = repo
-            .split('/')
-            .last()
-            .context(format!("Repo Name invalid: {}", repo))?;
+    plugins
+        .iter()
+        .map(|plugin_str| {
+            let mut parts = plugin_str.split('@');
+            let repo = parts.next().unwrap_or("");
+            let ref_name = parts.next().unwrap_or("HEAD");
 
-        let source = format!("https://github.com/{}/archive/{}.tar.gz", repo, ref_name);
-        let plugin = Plugin {
-            name: String::from(repo_name),
-            source,
-            ..Default::default()
-        };
-        parsed_plugins.push(plugin);
-    }
+            let repo_name: &str = repo
+                .split('/')
+                .next_back()
+                .with_context(|| format!("Invalid repository name: {}", repo))?;
 
-    Ok(parsed_plugins)
+            let source: String = format!("https://github.com/{}/archive/{}.tar.gz", repo, ref_name);
+            Ok(Plugin {
+                name: String::from(repo_name),
+                source,
+                ..Default::default()
+            })
+        })
+        .collect()
 }
