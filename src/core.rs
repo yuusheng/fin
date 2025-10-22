@@ -45,18 +45,6 @@ impl Fin {
         })
     }
 
-    /// Get Fish configuration directory
-    fn get_fish_config_dir() -> Result<PathBuf> {
-        // Prefer environment variable, fallback to default path
-        if let Ok(path) = env::var("__fish_config_dir") {
-            Ok(PathBuf::from(path))
-        } else {
-            dirs::home_dir()
-                .map(|p| p.join(".config/fish"))
-                .context("Failed to get user home directory")
-        }
-    }
-
     /// Install plugins
     pub fn install<T: AsRef<str>>(&mut self, plugins: Option<Vec<T>>, force: bool) -> Result<()> {
         let plugins_to_install = self.get_plugins_to_install(plugins, force)?;
@@ -80,6 +68,79 @@ impl Fin {
         self.lock_file.plugins.extend(installed_plugins);
         self.lock_file.save(&self.fin_lock_file_path)?;
         Ok(())
+    }
+
+    /// Remove plugins
+    pub fn remove(&mut self, plugins: &[String]) -> Result<()> {
+        let plugins_to_remove: HashSet<_> = plugins.iter().collect();
+        let mut removed_count = 0;
+
+        self.lock_file.plugins.retain(|plugin| {
+            if !plugins_to_remove.contains(&plugin.name) {
+                return true;
+            }
+
+            if let Some(files) = &plugin.installed_files {
+                for file in files {
+                    // Ignore error for now
+                    let _ = fs::remove_file(file);
+                }
+            }
+            removed_count += 1;
+            println!("Removed: {}", &plugin.name);
+            false
+        });
+
+        println!("Removed {removed_count} plugins total");
+        self.lock_file.save(&self.fin_lock_file_path)?;
+        Ok(())
+    }
+
+    /// Update plugins
+    pub fn update(&mut self, plugins: &[String]) -> Result<()> {
+        let installed_plugins: std::collections::HashSet<String> =
+            self.plugins().map(|p| p.to_string()).collect();
+
+        let plugins_to_update: Vec<String> = if plugins.is_empty() {
+            installed_plugins.into_iter().collect()
+        } else {
+            plugins
+                .iter()
+                .filter(|&p| installed_plugins.contains(p))
+                .cloned()
+                .collect()
+        };
+
+        if plugins_to_update.is_empty() {
+            println!("No plugins to update");
+            return Ok(());
+        }
+
+        println!("Updating {} plugins...", plugins_to_update.len());
+
+        // Update by removing then reinstalling
+        self.install(Some(plugins_to_update), true)
+    }
+
+    /// List installed plugins
+    pub fn list(&self) -> Result<()> {
+        for plugin in self.plugins() {
+            println!("{plugin}");
+        }
+
+        Ok(())
+    }
+
+    /// Get Fish configuration directory
+    fn get_fish_config_dir() -> Result<PathBuf> {
+        // Prefer environment variable, fallback to default path
+        if let Ok(path) = env::var("__fish_config_dir") {
+            Ok(PathBuf::from(path))
+        } else {
+            dirs::home_dir()
+                .map(|p| p.join(".config/fish"))
+                .context("Failed to get user home directory")
+        }
     }
 
     fn get_plugins_to_install<T: AsRef<str>>(
@@ -124,36 +185,10 @@ impl Fin {
         if Path::new(&plugin.name).exists() {
             Self::copy_dir(Path::new(&plugin.name), temp_path)?;
         } else {
-            Self::download_repo(&plugin.source, temp_path)?;
+            download_repo(&plugin.source, temp_path)?;
         }
 
         Ok(temp_dir)
-    }
-
-    /// Download and extract repository
-    fn download_repo(url: &str, dest: &Path) -> Result<()> {
-        println!("Downloading: {url}");
-        let curl = Command::new("curl")
-            .arg("-sL")
-            .arg(url)
-            .stdout(Stdio::piped())
-            .spawn()
-            .context("Failed to spawn curl")?;
-
-        let tar_status = Command::new("tar")
-            .arg("-xz")
-            .arg("-C")
-            .arg(dest.as_os_str())
-            .arg("--strip-components=1")
-            .stdin(curl.stdout.context("Failed to get curl stdout")?)
-            .status()
-            .context("Failed to run tar")?;
-
-        if !tar_status.success() {
-            return Err(anyhow::anyhow!("tar command failed"));
-        }
-
-        Ok(())
     }
 
     /// Copy directory recursively
@@ -196,72 +231,6 @@ impl Fin {
     fn plugins(&self) -> impl Iterator<Item = &str> {
         self.lock_file.plugins.iter().map(|p| p.name.as_str())
     }
-
-    /// Remove plugins
-    pub fn remove(&mut self, plugins: &[String]) -> Result<()> {
-        let plugins_to_remove: HashSet<_> = plugins.iter().collect();
-        let mut removed_count = 0;
-
-        self.lock_file.plugins.retain(|plugin| {
-            if !plugins_to_remove.contains(&plugin.name) {
-                return true;
-            }
-
-            if let Some(files) = &plugin.installed_files {
-                for file in files {
-                    let _ = fs::remove_file(file);
-                }
-            }
-            removed_count += 1;
-            println!("Removed: {}", &plugin.name);
-            false
-        });
-
-        println!("Removed {removed_count} plugins total");
-        self.lock_file.save(&self.fin_lock_file_path)?;
-        Ok(())
-    }
-
-    /// Update plugins
-    pub fn update(&mut self, plugins: &[String]) -> Result<()> {
-        let plugins_to_update: Vec<String> = {
-            // All installed plugins
-            if plugins.is_empty() {
-                self.lock_file
-                    .plugins
-                    .iter()
-                    .map(|p| p.name.to_string())
-                    .collect::<Vec<String>>()
-            } else {
-                let installed_plugins: HashSet<_> = self.plugins().collect();
-                // Only specified plugins
-                plugins
-                    .iter()
-                    .filter(|p| installed_plugins.contains(p.as_str()))
-                    .cloned()
-                    .collect()
-            }
-        };
-
-        if plugins_to_update.is_empty() {
-            println!("No plugins to update");
-            return Ok(());
-        }
-
-        println!("Updating {} plugins...", plugins_to_update.len());
-
-        // Update by removing then reinstalling
-        self.install(Some(plugins_to_update), true)
-    }
-
-    /// List installed plugins
-    pub fn list(&self) -> Result<()> {
-        for plugin in self.plugins() {
-            println!("{plugin}");
-        }
-
-        Ok(())
-    }
 }
 
 fn parse_plugin<T: AsRef<str>>(plugins: &[T]) -> anyhow::Result<Vec<Plugin>> {
@@ -286,4 +255,30 @@ fn parse_plugin<T: AsRef<str>>(plugins: &[T]) -> anyhow::Result<Vec<Plugin>> {
             })
         })
         .collect()
+}
+
+/// Download and extract repository
+fn download_repo(url: &str, dest: &Path) -> Result<()> {
+    println!("Downloading: {url}");
+    let curl = Command::new("curl")
+        .arg("-sL")
+        .arg(url)
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("Failed to spawn curl")?;
+
+    let tar_status = Command::new("tar")
+        .arg("-xz")
+        .arg("-C")
+        .arg(dest.as_os_str())
+        .arg("--strip-components=1")
+        .stdin(curl.stdout.context("Failed to get curl stdout")?)
+        .status()
+        .context("Failed to run tar")?;
+
+    if !tar_status.success() {
+        return Err(anyhow::anyhow!("tar command failed"));
+    }
+
+    Ok(())
 }
