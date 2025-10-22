@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     env,
     fs::{self},
     path::{Path, PathBuf},
@@ -12,17 +12,16 @@ use tempfile::TempDir;
 use crate::lock::{LockFile, Plugin, PluginVecExt};
 
 const PLUGIN_SUBDIRS: &[&str] = &["functions", "conf.d", "completions"];
+const FIN_LOCK_FILENAME: &str = "fin-lock.toml";
 
 #[allow(dead_code)]
 pub struct Fin {
     fisher_path: PathBuf,
     fish_config_dir: PathBuf,
     fin_lock_file_path: PathBuf,
-    plugin_files: HashMap<String, Vec<PathBuf>>, // Plugin file mappings
     lock_file: LockFile,
 }
 
-const FIN_LOCK_FILENAME: &str = "fin-lock.toml";
 impl Fin {
     /// Initialize a Fisher instance
     pub fn new(fisher_path: Option<PathBuf>) -> Result<Self> {
@@ -42,7 +41,6 @@ impl Fin {
             fisher_path,
             fish_config_dir,
             fin_lock_file_path,
-            plugin_files: HashMap::new(),
             lock_file,
         })
     }
@@ -60,7 +58,7 @@ impl Fin {
     }
 
     /// Install plugins
-    pub fn install(&mut self, plugins: Option<Vec<String>>, force: bool) -> Result<()> {
+    pub fn install<T: AsRef<str>>(&mut self, plugins: Option<Vec<T>>, force: bool) -> Result<()> {
         let plugins_to_install = self.get_plugins_to_install(plugins, force)?;
 
         if plugins_to_install.is_empty() {
@@ -70,17 +68,10 @@ impl Fin {
 
         println!("Installing {} plugins...", plugins_to_install.len());
 
-        let (new_plugins, installed_files): (Vec<_>, Vec<_>) = plugins_to_install
-            .par_iter()
+        let new_plugins: Vec<_> = plugins_to_install
+            .into_par_iter()
             .filter_map(|plugin| self.install_plugin(plugin).ok())
-            .unzip();
-
-        self.plugin_files.extend(
-            new_plugins
-                .iter()
-                .map(|p| p.name.clone())
-                .zip(installed_files),
-        );
+            .collect();
 
         for plugin in &new_plugins {
             println!("Installed: {}", &plugin.name);
@@ -91,9 +82,9 @@ impl Fin {
         Ok(())
     }
 
-    fn get_plugins_to_install(
+    fn get_plugins_to_install<T: AsRef<str>>(
         &self,
-        plugins: Option<Vec<String>>,
+        plugins: Option<Vec<T>>,
         force: bool,
     ) -> Result<Vec<Plugin>> {
         let mut plugins_to_install = if let Some(plugins) = plugins {
@@ -109,15 +100,26 @@ impl Fin {
         Ok(plugins_to_install)
     }
 
-    fn install_plugin(&self, plugin: &Plugin) -> Result<(Plugin, Vec<PathBuf>)> {
-        self.fetch_plugin(plugin).and_then(|(_, temp_dir)| {
-            Self::do_install_plugin_files(&self.fisher_path, temp_dir.path())
-                .map(|installed_files| (plugin.clone(), installed_files))
+    fn install_plugin(&self, mut plugin: Plugin) -> Result<Plugin> {
+        self.fetch_plugin(&plugin).and_then(|temp_dir| {
+            Self::do_install_plugin_files(&self.fisher_path, temp_dir.path()).map(
+                |installed_files| {
+                    if !installed_files.is_empty() {
+                        plugin.installed_files = Some(
+                            installed_files
+                                .into_iter()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .collect(),
+                        );
+                    }
+                    plugin
+                },
+            )
         })
     }
 
     /// Fetch a single plugin
-    fn fetch_plugin<'a>(&self, plugin: &'a Plugin) -> Result<(&'a str, TempDir)> {
+    fn fetch_plugin(&self, plugin: &Plugin) -> Result<TempDir> {
         let temp_dir = TempDir::new()?;
         let temp_path = temp_dir.path();
 
@@ -127,7 +129,7 @@ impl Fin {
             Self::download_repo(&plugin.source, temp_path)?;
         }
 
-        Ok((&plugin.name, temp_dir))
+        Ok(temp_dir)
     }
 
     /// Download and extract repository
@@ -194,10 +196,7 @@ impl Fin {
     }
 
     fn plugins(&self) -> impl Iterator<Item = &str> {
-        self.lock_file
-            .plugins
-            .iter()
-            .map(|p| p.name.as_str())
+        self.lock_file.plugins.iter().map(|p| p.name.as_str())
     }
 
     /// Remove plugins
@@ -214,7 +213,6 @@ impl Fin {
                         }
                     }
                 }
-                self.plugin_files.remove(&plugin.name);
                 removed_count += 1;
                 println!("Removed: {}", &plugin.name);
                 false
@@ -230,14 +228,19 @@ impl Fin {
 
     /// Update plugins
     pub fn update(&mut self, plugins: &[String]) -> Result<()> {
-        let plugins_to_update = if plugins.is_empty() {
+        if plugins.is_empty() {
             // Update all installed plugins
-            self.lock_file
+            let plugins_to_update = self
+                .lock_file
                 .plugins
                 .iter()
                 .map(|p| p.name.to_string())
-                .collect::<Vec<String>>()
-        } else {
+                .collect::<Vec<String>>();
+            println!("Updating {} plugins...", plugins_to_update.len());
+            return self.install(Some(plugins_to_update), true);
+        }
+
+        let plugins_to_update: Vec<String> = {
             let installed_plugins: HashSet<_> = self.plugins().collect();
             // Update only specified plugins
             plugins
@@ -268,11 +271,11 @@ impl Fin {
     }
 }
 
-fn parse_plugin(plugins: &[String]) -> anyhow::Result<Vec<Plugin>> {
+fn parse_plugin<T: AsRef<str>>(plugins: &[T]) -> anyhow::Result<Vec<Plugin>> {
     plugins
         .iter()
         .map(|plugin_str| {
-            let mut parts = plugin_str.split('@');
+            let mut parts = plugin_str.as_ref().split('@');
             let repo = parts.next().unwrap_or("");
             let ref_name = parts.next().unwrap_or("HEAD");
 
