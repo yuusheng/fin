@@ -13,9 +13,9 @@ pub struct LockFile {
 pub struct Plugin {
     pub name: String,
     pub source: String,
-    pub commit_hash: String,
+    pub commit_hash: Option<String>,
     pub branch: Option<String>,
-    pub installed_files: Option<Vec<String>>,
+    pub installed_files: Option<HashSet<String>>,
     pub checksum: Option<String>,
 }
 
