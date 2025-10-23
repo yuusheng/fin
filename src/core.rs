@@ -23,11 +23,11 @@ pub struct Fin {
 }
 
 impl Fin {
-    /// Initialize a Fisher instance
-    pub fn new(fisher_path: Option<PathBuf>) -> Result<Self> {
+    /// Initialize a Fin instance
+    pub fn new(fin_path: Option<PathBuf>) -> Result<Self> {
         // Get Fish configuration directory
         let fish_config_dir = Self::get_fish_config_dir()?;
-        let fin_path = fisher_path.unwrap_or_else(|| fish_config_dir.clone());
+        let fin_path = fin_path.unwrap_or_else(|| fish_config_dir.clone());
         let fin_lock_file_path = fish_config_dir.join(FIN_LOCK_FILENAME);
 
         // Ensure installation directories exist
