@@ -46,8 +46,8 @@ impl Fin {
     }
 
     /// Install plugins
-    pub fn install<T: AsRef<str>>(&mut self, plugins: Option<Vec<T>>, force: bool) -> Result<()> {
-        let plugins_to_install = self.get_plugins_to_install(plugins, force)?;
+    pub fn install(&mut self, plugins: Option<Vec<String>>, force: bool) -> Result<()> {
+        let plugins_to_install = self.get_plugins_to_install(plugins, force);
 
         if plugins_to_install.is_empty() {
             println!("All plugins are already installed");
@@ -82,8 +82,11 @@ impl Fin {
 
             if let Some(files) = &plugin.installed_files {
                 for file in files {
+                    let plugin_path = &self.fish_config_dir.join(file);
                     // Ignore error for now
-                    let _ = fs::remove_file(file);
+                    let _ = fs::remove_file(plugin_path).map_err(|_| {
+                        println!("File not found: {}", file);
+                    });
                 }
             }
             removed_count += 1;
@@ -143,13 +146,9 @@ impl Fin {
         }
     }
 
-    fn get_plugins_to_install<T: AsRef<str>>(
-        &self,
-        plugins: Option<Vec<T>>,
-        force: bool,
-    ) -> Result<Vec<Plugin>> {
+    fn get_plugins_to_install(&self, plugins: Option<Vec<String>>, force: bool) -> Vec<Plugin> {
         let mut plugins_to_install = if let Some(plugins) = plugins {
-            parse_plugin(&plugins)?
+            plugins.iter().map(|p| Plugin::from(p.as_str())).collect()
         } else {
             self.lock_file.plugins.clone()
         };
@@ -158,7 +157,7 @@ impl Fin {
             plugins_to_install.diff_mut(&self.lock_file.plugins);
         }
 
-        Ok(plugins_to_install)
+        plugins_to_install
     }
 
     fn install_plugin(&self, mut plugin: Plugin) -> Result<Plugin> {
@@ -169,7 +168,12 @@ impl Fin {
             plugin.installed_files = Some(
                 installed_files
                     .into_iter()
-                    .map(|p| p.to_string_lossy().to_string())
+                    .map(|p| {
+                        p.strip_prefix(&self.fish_config_dir)
+                            .unwrap_or(&p)
+                            .to_string_lossy()
+                            .to_string()
+                    })
                     .collect::<std::collections::HashSet<String>>(),
             );
         }
@@ -233,31 +237,6 @@ impl Fin {
     }
 }
 
-fn parse_plugin<T: AsRef<str>>(plugins: &[T]) -> anyhow::Result<Vec<Plugin>> {
-    plugins
-        .iter()
-        .map(|plugin_str| {
-            let mut parts = plugin_str.as_ref().split('@');
-            let repo = parts.next().unwrap_or("");
-            let ref_name = parts.next().unwrap_or("HEAD");
-
-            let repo_name: &str = repo
-                .split('/')
-                .next_back()
-                .with_context(|| format!("Invalid repository name: {repo}"))?;
-
-            let source: String = format!("https://github.com/{repo}/archive/{ref_name}.tar.gz");
-
-            Ok(Plugin {
-                name: String::from(repo_name),
-                source,
-                ..Default::default()
-            })
-        })
-        .collect()
-}
-
-/// Download and extract repository
 fn download_repo(url: &str, dest: &Path) -> Result<()> {
     println!("Downloading: {url}");
     let curl = Command::new("curl")
