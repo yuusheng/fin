@@ -2,6 +2,9 @@
 name = "fin"
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/yuusheng/fin"
+description = "A fast, lightweight plugin manager for Fish shell"
+homepage = "https://github.com/yuusheng/fin"
 
 [dependencies]
 anyhow = "1.0"
@@ -13,3 +16,8 @@ rayon = "1.11.0"
 toml = "0.9.8"
 serde = { version = "1.0", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
