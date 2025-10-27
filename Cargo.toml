@@ -9,7 +9,6 @@ homepage = "https://github.com/yuusheng/fin"
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.0", features = ["derive"] }
-regex = "1.7"
 tempfile = "3.3"
 dirs = "6.0"
 rayon = "1.11.0"
