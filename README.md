@@ -17,13 +17,16 @@
 - [Fish shell](https://fishshell.com/)
 - `curl` and `tar` (for downloading plugins)
 
-### Build from Source
+### Homebrew
 
 ```bash
-git clone https://github.com/yourusername/fin.git
-cd fin
-cargo build --release
-cp target/release/fin ~/.local/bin/  # or any directory in your PATH
+brew install yuusheng/tap/fin
+```
+
+### Curl
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/yuusheng/fin/releases/download/v0.0.1/fin-installer.sh | sh
 ```
 
 ## Usage
@@ -34,7 +37,7 @@ Install plugins from GitHub repositories:
 
 ```bash
 # Install a plugin from GitHub
-fin install jorgebucaran/fisher
+fin install jethrokuan/z
 
 # Install multiple plugins
 fin install jorgebucaran/nvm.fish ilancosman/tide@v6
@@ -43,7 +46,7 @@ fin install jorgebucaran/nvm.fish ilancosman/tide@v6
 fin install
 
 # Force reinstall (useful for updates)
-fin install jorgebucaran/fisher --force
+fin install jethrokuan/z --force
 ```
 
 ### Remove Plugins
@@ -94,11 +97,14 @@ version = "1.0"
 generated_at = "2025-10-20T12:34:56Z"
 
 [[plugins]]
-name = "jorgebucaran/fisher"
-source = "https://github.com/jorgebucaran/fisher/archive/HEAD.tar.gz"
+name = "z"
+source = "https://github.com/jethrokuan/z/archive/HEAD.tar.gz"
 installed_files = [
-    "functions/fisher.fish",
-    "completions/fisher.fish",
+    "functions/__z_complete.fish",
+    "functions/__z_clean.fish",
+    "functions/__z_add.fish",
+    "conf.d/z.fish",
+    "functions/__z.fish",
 ]
 
 [[plugins]]
