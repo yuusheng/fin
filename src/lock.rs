@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use std::{collections::HashSet, fs, path::PathBuf};
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, Eq)]
@@ -8,6 +8,7 @@ pub struct Plugin {
     pub source: String,
     pub commit_hash: Option<String>,
     pub branch: Option<String>,
+    #[serde(serialize_with = "serialize_option_hashset_sorted")]
     pub installed_files: Option<HashSet<String>>,
     pub checksum: Option<String>,
 }
@@ -48,6 +49,23 @@ impl From<&str> for Plugin {
             source,
             ..Default::default()
         }
+    }
+}
+
+fn serialize_option_hashset_sorted<S>(
+    opt_hashset: &Option<HashSet<String>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match opt_hashset {
+        Some(hashset) => {
+            let mut vec: Vec<&String> = hashset.iter().collect();
+            vec.sort();
+            Some(vec).serialize(serializer)
+        }
+        None => None::<Vec<String>>.serialize(serializer),
     }
 }
 
