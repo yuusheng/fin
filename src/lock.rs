@@ -21,25 +21,15 @@ impl PartialEq for Plugin {
 impl std::hash::Hash for Plugin {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.name.hash(state);
-        self.commit_hash.hash(state);
     }
 }
 
 pub trait PluginVecExt {
-    fn diff(&self, other: &[Plugin]) -> Vec<Plugin>;
-    fn diff_mut(&mut self, other: &[Plugin]);
+    fn diff_mut(&mut self, other: &HashSet<Plugin>);
 }
 
-impl PluginVecExt for Vec<Plugin> {
-    fn diff(&self, other: &[Plugin]) -> Vec<Plugin> {
-        let other_plugins: HashSet<_> = other.iter().collect();
-        self.iter()
-            .filter(|p| !other_plugins.contains(p))
-            .cloned()
-            .collect()
-    }
-
-    fn diff_mut(&mut self, other: &[Plugin]) {
+impl PluginVecExt for HashSet<Plugin> {
+    fn diff_mut(&mut self, other: &HashSet<Plugin>) {
         let other_plugins: HashSet<_> = other.iter().collect();
         self.retain(|p| !other_plugins.contains(p));
     }
@@ -65,7 +55,7 @@ impl From<&str> for Plugin {
 pub struct LockFile {
     pub version: String,
     pub generated_at: DateTime<Utc>,
-    pub plugins: Vec<Plugin>,
+    pub plugins: HashSet<Plugin>,
 }
 
 impl LockFile {
@@ -80,7 +70,7 @@ impl LockFile {
         Ok(LockFile {
             version: String::from("1.0"),
             generated_at: Utc::now(),
-            plugins: Vec::new(),
+            plugins: HashSet::new(),
         })
     }
 

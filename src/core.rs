@@ -146,7 +146,7 @@ impl Fin {
         }
     }
 
-    fn get_plugins_to_install(&self, plugins: Option<Vec<String>>, force: bool) -> Vec<Plugin> {
+    fn get_plugins_to_install(&self, plugins: Option<Vec<String>>, force: bool) -> HashSet<Plugin> {
         let mut plugins_to_install = if let Some(plugins) = plugins {
             plugins.iter().map(|p| Plugin::from(p.as_str())).collect()
         } else {
@@ -185,31 +185,9 @@ impl Fin {
     fn fetch_plugin(&self, plugin: &Plugin) -> Result<TempDir> {
         let temp_dir = TempDir::new()?;
         let temp_path = temp_dir.path();
-
-        if Path::new(&plugin.name).exists() {
-            Self::copy_dir(Path::new(&plugin.name), temp_path)?;
-        } else {
-            download_repo(&plugin.source, temp_path)?;
-        }
+        download_repo(&plugin.source, temp_path)?;
 
         Ok(temp_dir)
-    }
-
-    /// Copy directory recursively
-    fn copy_dir(src: &Path, dest: &Path) -> Result<()> {
-        fs::create_dir_all(dest)?;
-        for entry in fs::read_dir(src)? {
-            let entry = entry?;
-            let src_path = entry.path();
-            let dest_path = dest.join(entry.file_name());
-
-            if src_path.is_dir() {
-                Self::copy_dir(&src_path, &dest_path)?;
-            } else {
-                fs::copy(&src_path, &dest_path)?;
-            }
-        }
-        Ok(())
     }
 
     fn do_install_plugin_files(&self, temp_dir: &Path) -> Result<Vec<PathBuf>> {
