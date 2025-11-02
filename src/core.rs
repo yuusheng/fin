@@ -35,7 +35,7 @@ impl Fin {
             fs::create_dir_all(fin_path.join(subdir))?;
         }
 
-        let lock_file = LockFile::load(&fin_lock_file_path).context("fin-lock.toml has broken")?;
+        let lock_file = LockFile::load(&fin_lock_file_path);
 
         Ok(Self {
             fin_path,
