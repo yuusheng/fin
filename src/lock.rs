@@ -69,7 +69,7 @@ where
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LockFile {
     pub version: String,
     pub generated_at: DateTime<Utc>,
@@ -77,24 +77,82 @@ pub struct LockFile {
 }
 
 impl LockFile {
-    pub fn load(path: &PathBuf) -> anyhow::Result<Self> {
+    pub fn load(path: &PathBuf) -> Self {
         if let Ok(content) = fs::read_to_string(path) {
-            let lock: LockFile = toml::from_str(&content)?;
-            return Ok(lock);
+            if let Ok(lock) = toml::from_str(&content) {
+                return lock;
+            }
+            println!("Lock file has been broken, rebuilding lock file.")
         }
 
         // First install
         // Return a default lock file if the file does not exist
-        Ok(LockFile {
+        LockFile {
             version: String::from("1.0"),
             generated_at: Utc::now(),
             plugins: HashSet::new(),
-        })
+        }
     }
 
     pub fn save(&self, path: &PathBuf) -> anyhow::Result<()> {
         let toml_str = toml::to_string_pretty(&self)?;
         fs::write(path, toml_str)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{fs, path::PathBuf};
+
+    use tempfile::tempdir;
+
+    use crate::lock::LockFile;
+
+    fn create_valid_lockfile_content() -> (LockFile, String) {
+        let lock_file = LockFile {
+            version: String::from("1.0"),
+            generated_at: chrono::Utc::now(), // Note: actual generated_at will differ slightly
+            plugins: std::collections::HashSet::new(),
+        };
+
+        let toml_content = toml::to_string(&lock_file).unwrap();
+
+        (lock_file, toml_content)
+    }
+
+    #[test]
+    fn lock_file_load() {
+        let lock_file = LockFile::load(&PathBuf::new());
+        assert_eq!(lock_file.version, "1.0");
+        assert!(lock_file.plugins.is_empty());
+    }
+
+    #[test]
+    fn test_load_success() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test_lock.toml");
+
+        let (_, valid_content) = create_valid_lockfile_content();
+        fs::write(&file_path, &valid_content).unwrap();
+
+        let loaded_lock = LockFile::load(&file_path);
+
+        assert_eq!(loaded_lock.version, "1.0");
+        assert!(loaded_lock.plugins.is_empty());
+        assert!(loaded_lock.generated_at > chrono::Utc::now() - chrono::Duration::seconds(5));
+    }
+
+    #[test]
+    fn test_invalid_toml_returns_default() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("broken_lock.toml");
+
+        fs::write(&file_path, "not a valid toml\nkey = {").unwrap();
+
+        let loaded_lock = LockFile::load(&file_path);
+
+        assert_eq!(loaded_lock.version, "1.0");
+        assert!(loaded_lock.plugins.is_empty());
     }
 }
